@@ -247,54 +247,77 @@ def static_table(d, controls, name, caption, label, with_new=False,
 def specialisation_interaction_table(d, controls, name, caption, label,
                                      verbose=True):
     samples = [C.PERIODS_FULL, C.PERIODS_CLEAN]
-    terms = ("post", "new", "post_new")
+    inter_terms = ("post", "new", "post_new")
     term_lab = {"post": "Post", "new": "New",
                 "post_new": r"Post $\times$ New"}
+    specs = [("agg", ("post",), "Agg."), ("inter", inter_terms, "Inter.")]
+
     res, nobs, r2, rows = {}, {}, {}, []
-    for s in samples:
-        ds = d[d[C.YEAR_COL].isin(s["years"])]
+    for s_ in samples:
+        ds = d[d[C.YEAR_COL].isin(s_["years"])]
         for col, lab in C.METRICS:
-            r = static_model(ds, "metric", col, controls, s["post_from"],
-                             terms=terms)
-            if r is None:
-                continue
-            res[(s["label"], col)] = r["est"]
-            nobs[(s["label"], col)] = r["N"]
-            r2[(s["label"], col)] = r.get("r2", np.nan)
-            for t, (b, se, p) in r["est"].items():
-                rows.append(dict(sample=s["label"], metric=col, label=lab,
-                                 term=t, beta=b, se=se, p=p,
-                                 mark=stars(p, tex=False), N=r["N"],
-                                 r2=r.get("r2", np.nan)))
+            for sid, terms, _slab in specs:
+                r = static_model(ds, "metric", col, controls,
+                                 s_["post_from"], terms=terms)
+                if r is None:
+                    continue
+                res[(s_["label"], col, sid)] = r["est"]
+                nobs[(s_["label"], col, sid)] = r["N"]
+                r2[(s_["label"], col, sid)] = r.get("r2", np.nan)
+                for t, (bb, se, p) in r["est"].items():
+                    rows.append(dict(sample=s_["label"], metric=col,
+                                     label=lab, spec=sid, term=t, beta=bb,
+                                     se=se, p=p, mark=stars(p, tex=False),
+                                     N=r["N"], r2=r.get("r2", np.nan)))
     tab = pd.DataFrame(rows)
     tab.to_csv(C.TAB_DIR / f"{name}.csv", index=False)
 
-    cols = [(s, col, lab) for s in samples for col, lab in C.METRICS]
+    cols = [(s_, col, lab, sid, slab)
+            for s_ in samples for col, lab in C.METRICS
+            for sid, _t, slab in specs]
     ncol = len(cols)
-    L = [r"\begin{table}[htbp]", r"\centering", r"\footnotesize",
+
+    L = [r"\begin{table}[H]", r"\centering", r"\footnotesize",
+         r"\setlength{\tabcolsep}{6pt}",
+         r"\renewcommand{\arraystretch}{1.3}", "",
          r"\begin{tabular}{l" + "c" * ncol + "}", r"\toprule",
-         " & " + " & ".join(rf"\multicolumn{{2}}{{c}}{{{s['label']}}}"
-                            for s in samples) + r" \\",
-         " ".join(rf"\cmidrule(lr){{{2 + i * 2}-{3 + i * 2}}}"
+         " & " + " & ".join(
+             rf"\multicolumn{{4}}{{c}}{{\textbf{{{s_['label'].split('(')[0].strip()}}}}}"
+             for s_ in samples) + r" \\",
+         " & " + " & ".join(
+             rf"\multicolumn{{4}}{{c}}{{\textbf{{({s_['label'].split('(')[1]}}}}}"
+             for s_ in samples) + r" \\",
+         " ".join(rf"\cmidrule(lr){{{2 + i * 4}-{5 + i * 4}}}"
                   for i in range(len(samples))),
-         "Term & " + " & ".join(lab for _s, _c, lab in cols) + r" \\",
-         r"\midrule"]
-    for t in terms:
-        vals = [res.get((s["label"], col), {}).get(t) for s, col, _l in cols]
+         " & " + " & ".join(rf"\multicolumn{{2}}{{c}}{{{lab}}}"
+                            for _s in samples for _c, lab in C.METRICS)
+         + r" \\",
+         " ".join(rf"\cmidrule(lr){{{2 + i * 2}-{3 + i * 2}}}"
+                  for i in range(len(samples) * len(C.METRICS))),
+         "Term & " + " & ".join(slab for _s, _c, _l, _sid, slab in cols)
+         + r" \\", r"\midrule"]
+
+    for t in inter_terms:
+        vals = [res.get((s_["label"], col, sid), {}).get(t)
+                for s_, col, _l, sid, _sl in cols]
+        if all(v is None for v in vals):
+            continue
         L.append(term_lab[t] + " & "
-                 + " & ".join(_cell(v, 4) for v in vals) + r" \\")
+                 + " & ".join("" if v is None else _cell(v, 4)
+                              for v in vals) + r" \\")
         L.append(" & " + " & ".join("" if v is None else f"({v[1]:.4f})"
                                     for v in vals) + r" \\")
     L.append(r"\midrule")
     L.append("Controls & " + " & ".join(["Yes"] * ncol) + r" \\")
     L.append("Field fixed effects & " + " & ".join(["Yes"] * ncol) + r" \\")
     L.append("Observations & "
-             + " & ".join(f"{nobs.get((s['label'], col), 0):,}"
-                          for s, col, _l in cols) + r" \\")
-    L.append("$R^2$ & " + " & ".join(_r2cell(r2.get((s["label"], col)))
-                                     for s, col, _l in cols) + r" \\")
-    L += [r"\bottomrule", r"\end{tabular}",
-          rf"\caption{{{caption} {C.SIG_KEY_TEX}}}",
+             + " & ".join(f"{nobs.get((s_['label'], col, sid), 0):,}"
+                          for s_, col, _l, sid, _sl in cols) + r" \\")
+    L.append("$R^2$ & "
+             + " & ".join(_r2cell(r2.get((s_["label"], col, sid)))
+                          for s_, col, _l, sid, _sl in cols) + r" \\")
+    L += [r"\bottomrule", r"\end{tabular}", "",
+          rf"\caption{{{caption} {C.SIG_KEY_TEX}}}", "",
           rf"\label{{{label}}}", r"\end{table}"]
     write_tex(L, f"{name}.tex", verbose)
     return tab
